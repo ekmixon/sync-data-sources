@@ -136,18 +136,12 @@ class Enrich(ElasticItems):
                 self.json_projects = json.load(data_file)
                 # If we have JSON projects always use them for mapping
                 self.prjs_map = self.__convert_json_to_projects_map(self.json_projects)
-        if not self.json_projects:
-            if db_projects_map and not MYSQL_LIBS:
-                raise RuntimeError("Projects configured but MySQL libraries not available.")
-            if db_projects_map and not self.json_projects:
-                self.prjs_map = self.__get_projects_map(db_projects_map,
-                                                        db_user, db_password,
-                                                        db_host)
-
-        if self.prjs_map and self.json_projects:
-            # logger.info("Comparing db and json projects")
-            # self.__compare_projects_map(self.prjs_map, self.json_projects)
-            pass
+        if not self.json_projects and db_projects_map and not MYSQL_LIBS:
+            raise RuntimeError("Projects configured but MySQL libraries not available.")
+        if db_projects_map and not self.json_projects:
+            self.prjs_map = self.__get_projects_map(db_projects_map,
+                                                    db_user, db_password,
+                                                    db_host)
 
         self.studies = []
 
@@ -180,7 +174,7 @@ class Enrich(ElasticItems):
         backend_name = self.get_connector_name()
         # We can now create the perceval backend
         if not get_connector_from_name(backend_name):
-            raise RuntimeError("Unknown backend {}".format(backend_name))
+            raise RuntimeError(f"Unknown backend {backend_name}")
         connector = get_connector_from_name(backend_name)
         klass = connector[3]  # BackendCmd for the connector
         if not klass:
@@ -225,34 +219,30 @@ class Enrich(ElasticItems):
                 if ds == "meta":
                     continue  # not a real data source
                 if ds not in ds_repo_to_prj:
-                    if ds not in ds_repo_to_prj:
-                        ds_repo_to_prj[ds] = {}
+                    ds_repo_to_prj[ds] = {}
                 for repo in json[project][ds]:
                     repo, _ = self.extract_repo_labels(repo)
                     if repo in ds_repo_to_prj[ds]:
                         if project == ds_repo_to_prj[ds][repo]:
-                            logger.debug("Duplicated repo: {} {} {}".format(ds, repo, project))
-                        else:
-                            if len(project.split(".")) > len(ds_repo_to_prj[ds][repo].split(".")):
-                                logger.debug("Changed repo project because we found a leaf: {} leaf vs "
-                                             "{} ({}, {})".format(project, ds_repo_to_prj[ds][repo], repo, ds))
-                                ds_repo_to_prj[ds][repo] = project
+                            logger.debug(f"Duplicated repo: {ds} {repo} {project}")
+                        elif len(project.split(".")) > len(ds_repo_to_prj[ds][repo].split(".")):
+                            logger.debug(
+                                f"Changed repo project because we found a leaf: {project} leaf vs {ds_repo_to_prj[ds][repo]} ({repo}, {ds})"
+                            )
+
+                            ds_repo_to_prj[ds][repo] = project
                     else:
                         ds_repo_to_prj[ds][repo] = project
         return ds_repo_to_prj
 
     def __compare_projects_map(self, db, json):
-        # Compare the projects coming from db and from a json file in eclipse
-        ds_map_db = {}
         ds_map_json = {
             "git": "scm",
             "pipermail": "mls",
             "gerrit": "scr",
             "bugzilla": "its"
         }
-        for ds in ds_map_json:
-            ds_map_db[ds_map_json[ds]] = ds
-
+        ds_map_db = {ds_map_json[ds]: ds for ds in ds_map_json}
         db_projects = []
         dss = db.keys()
 
@@ -264,21 +254,21 @@ class Enrich(ElasticItems):
                 if project not in db_projects:
                     db_projects.append(project)
                 if project not in json:
-                    logger.error("Project not found in JSON {}".format(project))
-                    raise NotFoundError("Project not found in JSON {}".format(project))
+                    logger.error(f"Project not found in JSON {project}")
+                    raise NotFoundError(f"Project not found in JSON {project}")
                 else:
                     if ds == 'mls':
                         repo_mls = repository.split("/")[-1]
                         repo_mls = repo_mls.replace(".mbox", "")
-                        repository = 'https://dev.eclipse.org/mailman/listinfo/' + repo_mls
+                        repository = f'https://dev.eclipse.org/mailman/listinfo/{repo_mls}'
                     if ds_map_db[ds] not in json[project]:
-                        logger.error("db repository not found in json {}".format(repository))
+                        logger.error(f"db repository not found in json {repository}")
                     elif repository not in json[project][ds_map_db[ds]]:
-                        logger.error("db repository not found in json {}".format(repository))
+                        logger.error(f"db repository not found in json {repository}")
 
         for project in json.keys():
             if project not in db_projects:
-                logger.debug("JSON project {} not found in db".format(project))
+                logger.debug(f"JSON project {project} not found in db")
 
         # Check that all JSON data is in the database
         for project in json:
@@ -289,15 +279,12 @@ class Enrich(ElasticItems):
                 for repo in json[project][ds]:
                     if ds == 'pipermail':
                         repo_mls = repo.split("/")[-1]
-                        repo = "/mnt/mailman_archives/%s.mbox/%s.mbox" % (repo_mls, repo_mls)
-                    if repo in db[ds_map_json[ds]]:
-                        # print("Found ", repo, ds)
-                        pass
-                    else:
-                        logger.debug("Not found repository in db {} {}".format(repo, ds))
+                        repo = f"/mnt/mailman_archives/{repo_mls}.mbox/{repo_mls}.mbox"
+                    if repo not in db[ds_map_json[ds]]:
+                        logger.debug(f"Not found repository in db {repo} {ds}")
 
-        logger.debug("Number of db projects: {}".format(db_projects))
-        logger.debug("Number of json projects: {} (>={})".format(json.keys(), db_projects))
+        logger.debug(f"Number of db projects: {db_projects}")
+        logger.debug(f"Number of json projects: {json.keys()} (>={db_projects})")
 
     def __get_projects_map(self, db_projects_map, db_user=None, db_password=None, db_host=None):
         # Read the repo to project mapping from a database
@@ -314,15 +301,14 @@ class Enrich(ElasticItems):
         """
 
         res = int(cursor.execute(query))
-        if res > 0:
-            rows = cursor.fetchall()
-            for row in rows:
-                [ds, name, repo] = row
-                if ds not in ds_repo_to_prj:
-                    ds_repo_to_prj[ds] = {}
-                ds_repo_to_prj[ds][repo] = name
-        else:
-            raise RuntimeError("Can't find projects mapping in {}".format(db_projects_map))
+        if res <= 0:
+            raise RuntimeError(f"Can't find projects mapping in {db_projects_map}")
+        rows = cursor.fetchall()
+        for row in rows:
+            [ds, name, repo] = row
+            if ds not in ds_repo_to_prj:
+                ds_repo_to_prj[ds] = {}
+            ds_repo_to_prj[ds][repo] = name
         return ds_repo_to_prj
 
     def get_field_unique_id(self):
@@ -365,7 +351,7 @@ class Enrich(ElasticItems):
 
         url = self.elastic.get_bulk_url()
 
-        logger.debug("Adding items to {} (in {} packs)".format(anonymize_url(url), max_items))
+        logger.debug(f"Adding items to {anonymize_url(url)} (in {max_items} packs)")
 
         if events:
             logger.debug("Adding events items")
@@ -389,7 +375,7 @@ class Enrich(ElasticItems):
                 rich_item = self.get_rich_item(item)
                 data_json = json.dumps(rich_item)
                 bulk_json += '{"index" : {"_id" : "%s" } }\n' % \
-                    (item[self.get_field_unique_id()])
+                        (item[self.get_field_unique_id()])
                 bulk_json += data_json + "\n"  # Bulk document
                 current += 1
             else:
@@ -397,7 +383,7 @@ class Enrich(ElasticItems):
                 for rich_event in rich_events:
                     data_json = json.dumps(rich_event)
                     bulk_json += '{"index" : {"_id" : "%s_%s" } }\n' % \
-                        (item[self.get_field_unique_id()],
+                            (item[self.get_field_unique_id()],
                          rich_event[self.get_field_event_unique_id()])
                     bulk_json += data_json + "\n"  # Bulk document
                     current += 1
@@ -449,10 +435,7 @@ class Enrich(ElasticItems):
         return domain
 
     def get_identity_domain(self, identity):
-        domain = None
-        if identity['email']:
-            domain = self.get_email_domain(identity['email'])
-        return domain
+        return self.get_email_domain(identity['email']) if identity['email'] else None
 
     def get_item_id(self, eitem):
         """ Return the item_id linked to this enriched eitem """
@@ -462,15 +445,10 @@ class Enrich(ElasticItems):
 
     def get_last_update_from_es(self, _filters=[]):
 
-        last_update = self.elastic.get_last_date(self.get_incremental_date(), _filters)
-
-        return last_update
+        return self.elastic.get_last_date(self.get_incremental_date(), _filters)
 
     def get_last_offset_from_es(self, _filters=[]):
-        # offset is always the field name from perceval
-        last_update = self.elastic.get_last_offset("offset", _filters)
-
-        return last_update
+        return self.elastic.get_last_offset("offset", _filters)
 
 #    def get_elastic_mappings(self):
 #        """ Mappings for enriched indexes """
@@ -481,11 +459,9 @@ class Enrich(ElasticItems):
     def get_elastic_analyzers(self):
         """ Custom analyzers for our indexes  """
 
-        analyzers = '''
+        return '''
         {}
         '''
-
-        return analyzers
 
     def get_grimoire_fields(self, creation_date, item_name):
         """ Return common grimoire fields for all data sources """
@@ -496,7 +472,7 @@ class Enrich(ElasticItems):
         except Exception as ex:
             pass
 
-        name = "is_" + self.get_connector_name() + "_" + item_name
+        name = f"is_{self.get_connector_name()}_{item_name}"
 
         return {
             "grimoire_creation_date": grimoire_date,
@@ -521,11 +497,11 @@ class Enrich(ElasticItems):
 
         if project is not None:
             subprojects = project.split('.')
-            for i in range(0, len(subprojects)):
+            for i in range(len(subprojects)):
                 if i > 0:
                     eitem_path += "."
                 eitem_path += subprojects[i]
-                eitem_project_levels['project_' + str(i + 1)] = eitem_path
+                eitem_project_levels[f'project_{str(i + 1)}'] = eitem_path
 
         return eitem_project_levels
 
@@ -536,7 +512,7 @@ class Enrich(ElasticItems):
         :return: the project entry (a dictionary)
         """
         # get the data source name relying on the cfg section name, if null use the connector name
-        ds_name = self.cfg_section_name if self.cfg_section_name else self.get_connector_name()
+        ds_name = self.cfg_section_name or self.get_connector_name()
 
         try:
             # retrieve the project which includes the repo url in the projects.json,
@@ -551,8 +527,6 @@ class Enrich(ElasticItems):
             else:
                 repository = self.get_project_repository(eitem)
                 project = self.prjs_map[ds_name][repository]
-        # With the introduction of `projects_json_repo` the code in the
-        # except should be unreachable, and could be removed
         except KeyError:
             # logger.warning("Project not found for repository %s (data source: %s)", repository, ds_name)
             project = None
@@ -578,10 +552,10 @@ class Enrich(ElasticItems):
                 return project
 
             # Try to use always the origin in any case
-            if 'origin' in eitem:
-                if ds_name in self.prjs_map and eitem['origin'] in self.prjs_map[ds_name]:
+            if 'origin' in eitem and ds_name in self.prjs_map:
+                if eitem['origin'] in self.prjs_map[ds_name]:
                     project = self.prjs_map[ds_name][eitem['origin']]
-                elif ds_name in self.prjs_map:
+                else:
                     # Try to find origin as part of the keys
                     for ds_repo in self.prjs_map[ds_name]:
                         ds_repo = str(ds_repo)  # discourse has category_id ints
@@ -608,7 +582,7 @@ class Enrich(ElasticItems):
 
         eitem_project = {"project": project}
         # Time to add the project levels: eclipse.platform.releng.aggregator
-        eitem_project.update(self.add_project_levels(project))
+        eitem_project |= self.add_project_levels(project)
 
         # And now time to add the metadata
         eitem_project.update(self.get_item_metadata(eitem))
@@ -636,17 +610,18 @@ class Enrich(ElasticItems):
         if project and 'meta' in self.json_projects[project]:
             meta_fields = self.json_projects[project]['meta']
             if isinstance(meta_fields, dict):
-                eitem_metadata = {CUSTOM_META_PREFIX + "_" + field: value for field, value in meta_fields.items()}
+                eitem_metadata = {
+                    f"{CUSTOM_META_PREFIX}_{field}": value
+                    for field, value in meta_fields.items()
+                }
+
 
         return eitem_metadata
 
     # Sorting Hat stuff to be moved to SortingHat class
     def get_sh_identity(self, item, identity_field):
         """ Empty identity. Real implementation in each data source. """
-        identity = {}
-        for field in ['name', 'email', 'username']:
-            identity[field] = None
-        return identity
+        return {field: None for field in ['name', 'email', 'username']}
 
     def get_domain(self, identity):
         """ Get the domain from a SH identity """
@@ -660,11 +635,8 @@ class Enrich(ElasticItems):
         return domain
 
     def is_bot(self, uuid):
-        bot = False
         u = self.get_unique_identity(uuid)
-        if u.profile:
-            bot = u.profile.is_bot
-        return bot
+        return u.profile.is_bot if u.profile else False
 
     def get_enrollment(self, uuid, item_date):
         """ Get the enrollment for the uuid when the item was done """
@@ -689,11 +661,8 @@ class Enrich(ElasticItems):
         if item_date and item_date.tzinfo:
             item_date = (item_date - item_date.utcoffset()).replace(tzinfo=None)
 
-        enrollments = self.get_enrollments_complex(uuid, item_date, False)
-
-        if enrollments:
-            for enrollment in enrollments:
-                enrolls.append(enrollment)
+        if enrollments := self.get_enrollments_complex(uuid, item_date, False):
+            enrolls.extend(iter(enrollments))
         else:
             enrolls.append(self.unaffiliated_group)
 
@@ -702,18 +671,18 @@ class Enrich(ElasticItems):
     def __get_item_sh_fields_empty(self, rol, undefined=False):
         """ Return a SH identity with all fields to empty_field """
         # If empty_field is None, the fields do not appear in index patterns
-        empty_field = '' if not undefined else '-- UNDEFINED --'
+        empty_field = '-- UNDEFINED --' if undefined else ''
         return {
-            rol + "_id": empty_field,
-            rol + "_uuid": empty_field,
-            rol + "_name": empty_field,
-            rol + "_user_name": empty_field,
-            rol + "_domain": empty_field,
-            rol + "_gender": empty_field,
-            rol + "_gender_acc": None,
-            rol + "_org_name": empty_field,
-            rol + "_bot": False,
-            rol + MULTI_ORG_NAMES: [empty_field]
+            f"{rol}_id": empty_field,
+            f"{rol}_uuid": empty_field,
+            f"{rol}_name": empty_field,
+            f"{rol}_user_name": empty_field,
+            f"{rol}_domain": empty_field,
+            f"{rol}_gender": empty_field,
+            f"{rol}_gender_acc": None,
+            f"{rol}_org_name": empty_field,
+            f"{rol}_bot": False,
+            rol + MULTI_ORG_NAMES: [empty_field],
         }
 
     def get_item_no_sh_fields(self, identity, rol):
@@ -730,15 +699,15 @@ class Enrich(ElasticItems):
         uuid = utils.uuid(backend_name, email=email,
                           name=name, username=username)
         return {
-            rol + "_id": uuid,
-            rol + "_uuid": uuid,
-            rol + "_name": name,
-            rol + "_user_name": username,
-            rol + "_domain": self.get_identity_domain(identity),
-            rol + "_gender": self.unknown_gender,
-            rol + "_gender_acc": None,
-            rol + "_org_name": self.unaffiliated_group,
-            rol + "_bot": False
+            f"{rol}_id": uuid,
+            f"{rol}_uuid": uuid,
+            f"{rol}_name": name,
+            f"{rol}_user_name": username,
+            f"{rol}_domain": self.get_identity_domain(identity),
+            f"{rol}_gender": self.unknown_gender,
+            f"{rol}_gender_acc": None,
+            f"{rol}_org_name": self.unaffiliated_group,
+            f"{rol}_bot": False,
         }
 
     def get_item_sh_fields(self, identity=None, item_date=None, sh_id=None,
@@ -749,49 +718,51 @@ class Enrich(ElasticItems):
         if identity:
             # Use the identity to get the SortingHat identity
             sh_ids = self.get_sh_ids(identity, self.get_connector_name())
-            eitem_sh[rol + "_id"] = sh_ids.get('id', '')
-            eitem_sh[rol + "_uuid"] = sh_ids.get('uuid', '')
-            eitem_sh[rol + "_name"] = identity.get('name', '')
-            eitem_sh[rol + "_user_name"] = identity.get('username', '')
-            eitem_sh[rol + "_domain"] = self.get_identity_domain(identity)
+            eitem_sh[f"{rol}_id"] = sh_ids.get('id', '')
+            eitem_sh[f"{rol}_uuid"] = sh_ids.get('uuid', '')
+            eitem_sh[f"{rol}_name"] = identity.get('name', '')
+            eitem_sh[f"{rol}_user_name"] = identity.get('username', '')
+            eitem_sh[f"{rol}_domain"] = self.get_identity_domain(identity)
         elif sh_id:
             # Use the SortingHat id to get the identity
-            eitem_sh[rol + "_id"] = sh_id
-            eitem_sh[rol + "_uuid"] = self.get_uuid_from_id(sh_id)
+            eitem_sh[f"{rol}_id"] = sh_id
+            eitem_sh[f"{rol}_uuid"] = self.get_uuid_from_id(sh_id)
         else:
             # No data to get a SH identity. Return an empty one.
             return eitem_sh
 
         # If the identity does not exists return and empty identity
-        if rol + "_uuid" not in eitem_sh or not eitem_sh[rol + "_uuid"]:
+        if f"{rol}_uuid" not in eitem_sh or not eitem_sh[f"{rol}_uuid"]:
             return self.__get_item_sh_fields_empty(rol, undefined=True)
 
-        # Get the SH profile to use first this data
-        profile = self.get_profile_sh(eitem_sh[rol + "_uuid"])
-
-        if profile:
+        if profile := self.get_profile_sh(eitem_sh[f"{rol}_uuid"]):
             # If name not in profile, keep its old value (should be empty or identity's name field value)
-            eitem_sh[rol + "_name"] = profile.get('name', eitem_sh[rol + "_name"])
+            eitem_sh[f"{rol}_name"] = profile.get('name', eitem_sh[f"{rol}_name"])
 
-            email = profile.get('email', None)
-            if email:
-                eitem_sh[rol + "_domain"] = self.get_email_domain(email)
+            if email := profile.get('email', None):
+                eitem_sh[f"{rol}_domain"] = self.get_email_domain(email)
 
-            eitem_sh[rol + "_gender"] = profile.get('gender', self.unknown_gender)
-            eitem_sh[rol + "_gender_acc"] = profile.get('gender_acc', 0)
+            eitem_sh[f"{rol}_gender"] = profile.get('gender', self.unknown_gender)
+            eitem_sh[f"{rol}_gender_acc"] = profile.get('gender_acc', 0)
 
-        elif not profile and sh_id:
-            logger.warning("Can't find SH identity profile: {}".format(sh_id))
+        elif sh_id:
+            logger.warning(f"Can't find SH identity profile: {sh_id}")
 
         # Ensure we always write gender fields
-        if not eitem_sh.get(rol + "_gender"):
-            eitem_sh[rol + "_gender"] = self.unknown_gender
-            eitem_sh[rol + "_gender_acc"] = 0
+        if not eitem_sh.get(f"{rol}_gender"):
+            eitem_sh[f"{rol}_gender"] = self.unknown_gender
+            eitem_sh[f"{rol}_gender_acc"] = 0
 
-        eitem_sh[rol + "_org_name"] = self.get_enrollment(eitem_sh[rol + "_uuid"], item_date)
-        eitem_sh[rol + "_bot"] = self.is_bot(eitem_sh[rol + '_uuid'])
+        eitem_sh[f"{rol}_org_name"] = self.get_enrollment(
+            eitem_sh[f"{rol}_uuid"], item_date
+        )
 
-        eitem_sh[rol + MULTI_ORG_NAMES] = self.get_multi_enrollment(eitem_sh[rol + "_uuid"], item_date)
+        eitem_sh[f"{rol}_bot"] = self.is_bot(eitem_sh[f'{rol}_uuid'])
+
+        eitem_sh[rol + MULTI_ORG_NAMES] = self.get_multi_enrollment(
+            eitem_sh[f"{rol}_uuid"], item_date
+        )
+
         return eitem_sh
 
     def get_profile_sh(self, uuid):
@@ -822,18 +793,23 @@ class Enrich(ElasticItems):
         date = str_to_datetime(eitem[self.get_field_date()])
 
         for rol in roles:
-            if rol + "_id" not in eitem:
+            if f"{rol}_id" not in eitem:
                 # For example assignee in github it is usual that it does not appears
-                logger.debug("Enriched index does not include SH ids for {}_id. Can not refresh it.".format(rol))
+                logger.debug(
+                    f"Enriched index does not include SH ids for {rol}_id. Can not refresh it."
+                )
+
                 continue
-            sh_id = eitem[rol + "_id"]
+            sh_id = eitem[f"{rol}_id"]
             if not sh_id:
-                logger.debug("{}_id is None".format(rol))
+                logger.debug(f"{rol}_id is None")
                 continue
             if rol == author_field:
                 sh_id_author = sh_id
-            eitem_sh.update(self.get_item_sh_fields(sh_id=sh_id, item_date=date,
-                                                    rol=rol))
+            eitem_sh |= self.get_item_sh_fields(
+                sh_id=sh_id, item_date=date, rol=rol
+            )
+
 
         # Add the author field common in all data sources
         rol_author = 'author'
@@ -844,13 +820,7 @@ class Enrich(ElasticItems):
 
     def get_users_data(self, item):
         """ If user fields are inside the global item dict """
-        if 'data' in item:
-            users_data = item['data']
-        else:
-            # the item is directly the data (kitsune answer)
-            users_data = item
-
-        return users_data
+        return item['data'] if 'data' in item else item
 
     def get_item_sh(self, item, roles=None, date_field=None):
         """

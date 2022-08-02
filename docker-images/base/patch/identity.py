@@ -12,12 +12,11 @@ def get_token():
     }
 
     resp = requests.post(getenv('SSO_USER_SERVICE'), json=task)
-    if resp.status_code != 200:
-        access_token = None
-    else:
-        access_token = 'Bearer ' + resp.json()['access_token']
-
-    return access_token
+    return (
+        None
+        if resp.status_code != 200
+        else 'Bearer ' + resp.json()['access_token']
+    )
 
 def get_email(access_token, username):
     """Makes a request to User service and returns an email
@@ -39,8 +38,7 @@ def get_email(access_token, username):
         access_token = get_token()
         resp = requests.get(url, headers=header)
 
-    result = resp.json().get('Data', None)
-    if result:
+    if result := resp.json().get('Data', None):
         if len(result) > 0:
             for r in result:
                 if r['Username'] == username:
